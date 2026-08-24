@@ -8,6 +8,7 @@ Veille -> Telegram (canal unique, articles tagues par sujet)
   SOUV  : risque souverain, macro et politique monetaire (FR / EN / AR)
   TECH  : use cases technologiques internationaux dans la banque/finance
 
+Les articles non francophones sont traduits (titre + lien proxy translate.goog).
 Etat persistant : seen.json, recommit a chaque run.
 """
 
@@ -286,6 +287,45 @@ def source_de(entry, titre):
     return s.strip()
 
 
+TRADUIRE = os.environ.get("TRADUIRE", "1") == "1"
+_CACHE_TRAD = {}
+
+
+def traduire(texte, source="auto"):
+    """Traduit vers le francais. En cas d'echec, renvoie le texte original."""
+    if not TRADUIRE or not texte:
+        return texte
+    if texte in _CACHE_TRAD:
+        return _CACHE_TRAD[texte]
+    url = ("https://translate.googleapis.com/translate_a/single"
+           f"?client=gtx&sl={source}&tl=fr&dt=t&q={quote_plus(texte[:900])}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        out = "".join(seg[0] for seg in data[0] if seg and seg[0])
+        _CACHE_TRAD[texte] = out or texte
+        return _CACHE_TRAD[texte]
+    except Exception as ex:
+        print(f"  ! traduction echouee: {ex}", file=sys.stderr)
+        _CACHE_TRAD[texte] = texte
+        return texte
+
+
+def lien_traduit(url, src="auto"):
+    """Passe l'URL par le proxy translate.goog."""
+    m = re.match(r"^https?://([^/?#]+)([^#]*)$", url)
+    if not m:
+        return url
+    host, reste = m.group(1), m.group(2) or "/"
+    if not reste.startswith("/"):
+        reste = "/" + reste
+    host_tr = host.replace("-", "--").replace(".", "-")
+    sep = "&" if "?" in reste else "?"
+    return (f"https://{host_tr}.translate.goog{reste}{sep}"
+            f"_x_tr_sl={src}&_x_tr_tl=fr&_x_tr_hl=fr")
+
+
 def norm_titre(t):
     t = html.unescape(t or "").lower()
     t = re.sub(r"\s*[-|–—]\s*[^-|–—]{2,40}$", "", t)
@@ -340,7 +380,7 @@ def envoyer(texte):
         return False
 
 
-def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items):
+def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items, langue="fr"):
     """Parse un flux et empile les entrees retenues dans items."""
     try:
         d = feedparser.parse(url)
@@ -384,6 +424,7 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items):
             "tag": sujet["tag"], "source": media or etiquette, "date": dt,
             "score": score(titre, resume, poids) + bonus,
             "seuil": sujet.get("seuil", SEUIL_SCORE),
+            "langue": langue,
         })
         n += 1
     return n
@@ -403,14 +444,14 @@ def collecter():
             for hl, gl, ceid in sujet["locales"]:
                 n_sujet += traiter_flux(gnews_url(q, hl, gl, ceid), sujet,
                                         motif, motif_et, poids,
-                                        f"GNews {gl}", limite, items)
+                                        f"GNews {gl}", limite, items, hl)
                 time.sleep(0.35)
 
         for entree in sujet.get("flux", []):
             nom, url = entree[0], entree[1]
             poids = entree[2] if len(entree) > 2 else 7
             n_sujet += traiter_flux(url, sujet, motif, motif_et, poids,
-                                    nom, limite, items)
+                                    nom, limite, items, "en")
             time.sleep(0.35)
 
         langue = sujet["locales"][0][0] if sujet["locales"] else "rss"
@@ -441,9 +482,20 @@ def main():
     envoyes = 0
     for it in retenus[:MAX_ENVOIS]:
         alerte = "🔴" if it["score"] >= 20 else ("🟠" if it["score"] >= 15 else "⚪️")
-        msg = (f"{it['tag']} {alerte} <b>{html.escape(it['titre'])}</b>\n"
-               f"<i>{html.escape(it['source'])} · {it['date'].strftime('%d/%m %H:%M')} "
-               f"· score {it['score']}</i>\n{it['lien']}")
+        vo = it["titre"]
+        meta = (f"{html.escape(it['source'])} · "
+                f"{it['date'].strftime('%d/%m %H:%M')} · score {it['score']}")
+        if it.get("langue", "fr") != "fr":
+            titre_fr = traduire(vo, it["langue"])
+            ligne_vo = f"<i>{html.escape(vo)}</i>\n" if titre_fr != vo else ""
+            msg = (f"{it['tag']} {alerte} <b>{html.escape(titre_fr)}</b>\n"
+                   f"{ligne_vo}"
+                   f"<i>{meta}</i>\n"
+                   f"🇫🇷 {lien_traduit(it['lien'], it['langue'])}\n"
+                   f"🔗 {it['lien']}")
+        else:
+            msg = (f"{it['tag']} {alerte} <b>{html.escape(vo)}</b>\n"
+                   f"<i>{meta}</i>\n{it['lien']}")
         if envoyer(msg):
             seen[it["cle"]] = int(time.time())
             envoyes += 1
