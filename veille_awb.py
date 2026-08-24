@@ -3,13 +3,14 @@
 """
 Veille -> Telegram (canal unique, articles tagues par sujet)
 
-  AWB   : Attijariwafa bank et filiales
-  TN    : secteur bancaire tunisien
-  SOUV  : risque souverain, macro et politique monetaire (FR / EN / AR)
-  TECH  : use cases technologiques internationaux dans la banque/finance
+  AWB   : Attijariwafa bank et filiales          (Google News)
+  TN    : secteur bancaire tunisien              (Google News)
+  SOUV  : risque souverain / macro / monetaire   (Google News, FR-EN-AR)
+  TECH  : use cases technologiques internationaux (GDELT + Finextra)
 
-Articles non francophones : titre + resume traduits, lien vers version traduite.
-Etat persistant : seen.json, recommit a chaque run.
+Le sujet TECH n'utilise plus Google News : ses liens sont des identifiants
+chiffres, inexploitables pour la traduction. GDELT et les flux natifs
+renvoient les URL reelles des editeurs, donc le lien traduit fonctionne.
 """
 
 import os, json, time, hashlib, html, re, sys, base64
@@ -26,7 +27,6 @@ L_MA    = [("fr", "MA", "MA:fr"), ("ar", "MA", "MA:ar"), ("fr", "FR", "FR:fr"),
 L_TN    = [("fr", "TN", "TN:fr"), ("ar", "TN", "TN:ar"), ("fr", "FR", "FR:fr")]
 L_SOUV  = [("fr", "FR", "FR:fr"), ("en", "US", "US:en")]
 L_AR    = [("ar", "EG", "EG:ar"), ("ar", "TN", "TN:ar")]
-L_TECH  = [("en", "US", "US:en"), ("en", "GB", "GB:en"), ("fr", "FR", "FR:fr")]
 
 # ======================================================================
 # SUJETS
@@ -134,8 +134,9 @@ SUJETS = [
     },
     {
         "tag": "🟪 TECH",
-        "locales": L_TECH,
-        "seuil": 15,
+        "locales": [],          # plus de Google News : ses liens sont indechiffrables
+        "seuil": 18,
+        "fenetre": 24,
         "motif": (r"bank|banking|finance|financial|payment|paiement|fintech|"
                   r"insurance|assurance|lending|credit|treasury|capital market|"
                   r"banque|crédit|marché|deposit|dépôt|transaction|wallet|"
@@ -145,37 +146,20 @@ SUJETS = [
                   r"\bpix\b|\bupi\b|swift|iso ?20022|neobank|néobanque|"
                   r"jpmorgan|goldman|citigroup|\bhsbc\b|\bbnp\b|santander|\bdbs\b|"
                   r"\becb\b|\bbce\b|\bfed\b|\bboe\b|\bbis\b|\bmas\b|\bfca\b|\bocc\b"),
-        "motif_et": (r"deploy(?:s|ed|ment)?|roll(?:s|ed)? out|go(?:es)? live|went live|"
-                     r"in production|pilot|proof of concept|\bpoc\b|case study|"
-                     r"processed \d|handles \d|migrat(?:e|es|ed|ion)|implementation|"
-                     r"results show|reduced .{0,25} by \d|cut .{0,25} by \d|\d+ ?% |"
-                     r"lessons|post-?mortem|benchmark|outage|failure|abandon(?:s|ed)?|"
-                     r"scrap(?:s|ped)?|mandate|regulat(?:ion|or|ory)|licen[cs]e|"
-                     r"approv(?:e|es|ed|al)|greenlight|authoris|authoriz|adopts|"
-                     r"consultation|directive|ban(?:s|ned)|fine[sd]?|"
-                     r"acquir(?:e|es)|acquisition|merger|shut(?:s)? down|discontinue|"
-                     r"déploie|mise en production|pilote|retour d.expérience|"
-                     r"agrément|autorisation|sanction"),
-        "requetes": {
-            'bank deploys AI production': 8,
-            'bank core banking migration': 8,
-            'tokenized deposits bank live': 9,
-            'CBDC pilot central bank': 9,
-            'instant payments rollout': 8,
-            'open banking regulation': 8,
-            'stablecoin bank licence': 9,
-            'agentic AI bank pilot': 8,
-            'bank AI project failure OR abandoned': 9,
-            'ISO 20022 migration bank': 7,
-            'fraud detection AI bank results': 8,
-            'quantum computing bank pilot': 7,
-            'digital identity bank rollout': 7,
-            'embedded finance platform bank': 7,
-            'banque déploiement intelligence artificielle': 7,
-            'banque migration système information': 7,
+        "motif_et": None,
+        "requetes": {},
+        # GDELT DOC 2.0 : sans cle, URL editeur reelles -> lien de traduction operationnel
+        "gdelt": {
+            '(tokenised OR tokenized OR "tokenized deposits") AND bank': 9,
+            '(CBDC OR "digital euro") AND (pilot OR launch OR regulation)': 9,
+            'stablecoin AND (bank OR licence OR regulator)': 9,
+            '"open banking" AND (regulation OR mandate OR launch)': 8,
+            '"core banking" AND (migration OR replatform)': 8,
+            '(AI OR "artificial intelligence") AND bank AND (deployed OR pilot OR scrapped)': 8,
+            '"instant payments" AND (rollout OR mandate)': 8,
+            '"ISO 20022" AND (migration OR deadline)': 7,
         },
-        # Flux natifs : liens editeur directs + vraies descriptions.
-        # Le filtre use-case (motif_et) ne s'y applique pas : source deja curee.
+        # Flux natif : le filtre use-case ne s'y applique pas (source deja curee)
         "flux": [
             ("Finextra", "https://www.finextra.com/rss/headlines.aspx", 9),
         ],
@@ -199,14 +183,16 @@ BRUIT_RE = re.compile("|".join(BRUIT), re.IGNORECASE)
 SRC_EXCLUES = re.compile(
     r"pr ?newswire|business ?wire|globe ?newswire|ein ?presswire|accesswire|prweb|"
     r"openpr|newsfile|issuewire|analytics ?insight|cryptopolitan|bitcoinist|"
-    r"coinpedia|ambcrypto|benzinga|zacks|simply ?wall|investing\.com|marketbeat|"
-    r"medium\.com|linkedin\.com|substack|blogspot", re.IGNORECASE)
+    r"coinpedia|ambcrypto|benzinga|zacks|simply ?wall|investing|marketbeat|"
+    r"medium|linkedin|substack|blogspot|newsbtc|u\.?today|coingape|"
+    r"crypto ?news|the ?daily ?hodl|zerohedge", re.IGNORECASE)
 
 SRC_QUALITE = re.compile(
-    r"finextra|american banker|banking dive|the banker|financial times|reuters|"
-    r"bloomberg|wall street journal|the economist|techcrunch|sifted|rest of world|"
-    r"nikkei|mit technology review|ieee|bank for international|fintech futures|"
-    r"the paypers|payments dive|central banking|risk\.net", re.IGNORECASE)
+    r"finextra|american ?banker|banking ?dive|the ?banker|financial ?times|reuters|"
+    r"bloomberg|wall ?street ?journal|the ?economist|techcrunch|sifted|rest ?of ?world|"
+    r"nikkei|mit ?technology ?review|ieee|bank ?for ?international|fintech ?futures|"
+    r"the ?paypers|payments ?dive|central ?banking|risk\.net|coindesk|"
+    r"ledger ?insights|the ?block", re.IGNORECASE)
 
 PUB_RE = re.compile(
     r"\bproud to\b|is pleased to|announces? (?:a )?(?:strategic )?partnership|"
@@ -233,11 +219,17 @@ SIGNAUX_FORTS = {
     r"défaut|default|restructuration|restructuring|rééchelonnement": 7,
     r"spread|\bCDS\b|dévaluation|تخفيض قيمة": 6,
     r"levée de fonds|funding round|series [ABCD]\b|licorne|unicorn": 5,
-    r"agrément|licen[cs]e|sandbox|cadre réglementaire|regulatory framework": 6,
-    r"open banking|\bMNBC\b|\bCBDC\b|paiement instantané|instant payment": 6,
-    r"failure|abandoned|scrapped|outage|post-?mortem|lessons": 6,
-    r"went live|in production|rolled out|case study": 5,
+    r"agrément|licen[cs]e|sandbox|cadre réglementaire|regulatory framework|"
+    r"approv(?:e|es|ed|al)|authoris|authoriz|greenlight|mandate|directive|"
+    r"consultation|\bbans?\b|\bfined?\b|sanction": 6,
+    r"open banking|\bMNBC\b|\bCBDC\b|digital euro|digital pound|"
+    r"paiement instantané|instant payment": 6,
+    r"failure|abandon(?:s|ed)?|scrap(?:s|ped)?|shelv|halts?|pauses?|"
+    r"outage|post-?mortem|lessons|delays?": 6,
+    r"go(?:es)? live|went live|in production|roll(?:s|ed)? out|case study": 5,
     r"tokeni[sz]|stablecoin|settlement|custody|distributed ledger|smart contract": 6,
+    r"processed \d|handles \d|\d[\d ,.]*(?:million|billion|\bbn\b) transactions|"
+    r"adoption rate|active users": 5,
     r"chief (?:ai|data|digital|technolog\w+|information) officer|\bcaio\b": 4,
     r"fund ?rais|valuation|\$\d+ ?(?:m|bn|billion|million)": 5,
 }
@@ -256,6 +248,23 @@ TG_CHAT     = os.environ.get("TELEGRAM_CHAT_ID")
 def gnews_url(query, hl, gl, ceid):
     return (f"https://news.google.com/rss/search?q={quote_plus(query)}+when:2d"
             f"&hl={hl}&gl={gl}&ceid={ceid}")
+
+
+def gdelt_url(query, langue="english", heures=24, maxrec=75):
+    """GDELT DOC 2.0 : sans cle, renvoie les URL reelles des editeurs."""
+    q = f"{query} sourcelang:{langue}"
+    return ("https://api.gdeltproject.org/api/v2/doc/doc"
+            f"?query={quote_plus(q)}&mode=artlist&maxrecords={maxrec}"
+            f"&timespan={heures}h&sort=datedesc&format=rss")
+
+
+def media_de_domaine(lien):
+    """Nom lisible deduit du domaine, quand le flux ne donne pas de source."""
+    m = re.match(r"^https?://(?:www\.)?([^/:?#]+)", lien or "")
+    if not m:
+        return ""
+    d = re.sub(r"\.(com|net|org|co\.uk|co|io|fr|ma|tn|eu|info|news)$", "", m.group(1))
+    return d.replace(".", " ").replace("-", " ").title()
 
 
 def source_de(entry, titre):
@@ -291,6 +300,17 @@ def _trad_gtx(texte, source):
     return "".join(seg[0] for seg in data[0] if seg and seg[0])
 
 
+def _trad_clients5(texte, source):
+    url = ("https://clients5.google.com/translate_a/t"
+           f"?client=dict-chrome-ex&sl={source}&tl=fr&q={quote_plus(texte)}")
+    data = _http_json(url)
+    if isinstance(data, list):
+        if data and isinstance(data[0], list):
+            return "".join(x[0] for x in data[0] if x and x[0])
+        return "".join(x for x in data if isinstance(x, str))
+    return ""
+
+
 def _trad_mymemory(texte, source):
     src = "en" if source in ("auto", "en") else source
     url = ("https://api.mymemory.translated.net/get"
@@ -303,8 +323,8 @@ def _trad_mymemory(texte, source):
 
 
 def traduire(texte, source="auto"):
-    """Traduit vers le francais : gtx, puis MyMemory, sinon texte original.
-    Cap a 450 caracteres : l'API MyMemory limite q a 500 octets."""
+    """gtx, puis clients5, puis MyMemory, sinon texte original.
+    Cap a 450 caracteres : MyMemory limite q a 500 octets."""
     if not TRADUIRE or not texte:
         return texte
     texte = texte[:450]
@@ -320,7 +340,15 @@ def traduire(texte, source="auto"):
         except Exception as ex:
             _ECHECS_GTX[0] += 1
             if _ECHECS_GTX[0] == 1:
-                print(f"  ! gtx indisponible ({ex}), bascule MyMemory", file=sys.stderr)
+                print(f"  ! gtx indisponible ({ex}), bascule", file=sys.stderr)
+
+    try:
+        out = _trad_clients5(texte, source)
+        if out:
+            _CACHE_TRAD[texte] = out
+            return out
+    except Exception:
+        pass
 
     try:
         out = _trad_mymemory(texte, source)
@@ -335,7 +363,7 @@ def traduire(texte, source="auto"):
 
 
 # ----------------------------------------------------------------------
-# RESOLUTION DES LIENS GOOGLE NEWS
+# RESOLUTION DES LIENS
 # ----------------------------------------------------------------------
 def _varint(b, i):
     val = shift = 0
@@ -355,7 +383,6 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 def _decoder_b64(url_gnews):
-    """Ancien format d'identifiant : l'URL est en clair dans le protobuf."""
     m = re.search(r"/(?:rss/)?articles/([A-Za-z0-9_\-]+)", url_gnews)
     if not m:
         return None
@@ -387,7 +414,6 @@ def _decoder_b64(url_gnews):
 
 
 def _suivre_http(url):
-    """Suit la redirection Google News et extrait l'URL de l'editeur."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=12) as r:
@@ -408,7 +434,6 @@ def _suivre_http(url):
 
 
 def resoudre_lien(url_gnews):
-    """URL reelle de l'editeur. None si irrecuperable."""
     if not url_gnews.startswith("http"):
         return None
     if "news.google.com" not in url_gnews:
@@ -421,7 +446,6 @@ def resoudre_lien(url_gnews):
 
 
 def lien_traduit(url, src="auto"):
-    """Proxy translate.goog applique a une URL editeur. None si non resolue."""
     reel = resoudre_lien(url)
     if not reel or "news.google.com" in reel:
         return None
@@ -438,18 +462,32 @@ def lien_traduit(url, src="auto"):
 
 
 # ----------------------------------------------------------------------
-def titre_propre(titre, media):
-    """Retire le suffixe ' - Media' redondant avec la ligne source."""
-    if media and titre.endswith(" - " + media):
-        return titre[: -(len(media) + 3)].strip()
-    return re.sub(r"\s+[-|–—]\s+[^-|–—]{2,40}$", "", titre).strip()
-
-
 def norm_titre(t):
     t = html.unescape(t or "").lower()
     t = re.sub(r"\s*[-|–—]\s*[^-|–—]{2,40}$", "", t)
     t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def resume_utile(titre, resume):
+    """Le resume n'apporte rien s'il reprend le titre (cas Google News)."""
+    if not resume or len(resume.strip()) < 60:
+        return False
+    nt, nr = norm_titre(titre), norm_titre(resume)
+    if not nt:
+        return True
+    if nr.startswith(nt[:60]):
+        return False
+    mots_t, mots_r = set(nt.split()), set(nr.split())
+    if mots_t and len(mots_t & mots_r) / len(mots_t) > 0.85:
+        return False
+    return True
+
+
+def titre_propre(titre, media):
+    if media and titre.endswith(" - " + media):
+        return titre[: -(len(media) + 3)].strip()
+    return re.sub(r"\s+[-|–—]\s+[^-|–—]{2,40}$", "", titre).strip()
 
 
 def cle(titre):
@@ -501,7 +539,6 @@ def envoyer(texte):
 
 def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items,
                  langue="fr", strict=True):
-    """Parse un flux et empile les entrees retenues dans items."""
     try:
         d = feedparser.parse(url)
     except Exception as ex:
@@ -516,7 +553,7 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items,
             continue
 
         txt = f"{titre} {resume}"
-        media = source_de(e, titre) or etiquette
+        media = source_de(e, titre) or media_de_domaine(lien) or etiquette
 
         if SRC_EXCLUES.search(media):
             continue
@@ -533,7 +570,7 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items,
                or getattr(e, "updated_parsed", None))
         if pub:
             dt = datetime.fromtimestamp(time.mktime(pub), tz=timezone.utc)
-            if dt < limite:
+            if dt < limite or dt > datetime.now(timezone.utc) + timedelta(hours=6):
                 continue
         else:
             dt = datetime.now(timezone.utc)
@@ -553,9 +590,11 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items,
 
 def collecter():
     items = []
-    limite = datetime.now(timezone.utc) - timedelta(hours=FENETRE_H)
+    maintenant = datetime.now(timezone.utc)
 
     for sujet in SUJETS:
+        fen = sujet.get("fenetre", FENETRE_H)
+        limite = maintenant - timedelta(hours=fen)
         motif = re.compile(sujet["motif"], re.IGNORECASE)
         motif_et = (re.compile(sujet["motif_et"], re.IGNORECASE)
                     if sujet.get("motif_et") else None)
@@ -568,6 +607,12 @@ def collecter():
                                         f"GNews {gl}", limite, items, hl)
                 time.sleep(0.35)
 
+        for q, poids in sujet.get("gdelt", {}).items():
+            n_sujet += traiter_flux(gdelt_url(q, "english", fen), sujet,
+                                    motif, motif_et, poids,
+                                    "GDELT", limite, items, "en", strict=False)
+            time.sleep(0.5)
+
         for entree in sujet.get("flux", []):
             nom, url = entree[0], entree[1]
             poids = entree[2] if len(entree) > 2 else 7
@@ -575,7 +620,7 @@ def collecter():
                                     nom, limite, items, "en", strict=False)
             time.sleep(0.35)
 
-        langue = sujet["locales"][0][0] if sujet["locales"] else "rss"
+        langue = sujet["locales"][0][0] if sujet["locales"] else "gdelt+rss"
         print(f"  {sujet['tag']} ({langue}) : {n_sujet} items retenus")
     return items
 
@@ -606,14 +651,14 @@ def main():
 
     envoyes = 0
     for it in retenus[:MAX_ENVOIS]:
-        alerte = "🔴" if it["score"] >= 20 else ("🟠" if it["score"] >= 15 else "⚪️")
+        alerte = "🔴" if it["score"] >= 24 else ("🟠" if it["score"] >= 19 else "⚪️")
         vo = titre_propre(it["titre"], it["source"])
         meta = (f"{html.escape(it['source'])} · "
                 f"{it['date'].strftime('%d/%m %H:%M')} · score {it['score']}")
 
         ligne_res = ""
         brut = (it.get("resume") or "").strip()
-        if len(brut) > 60:
+        if resume_utile(it["titre"], brut):
             court = brut[:400].rsplit(" ", 1)[0]
             if it.get("langue", "fr") != "fr":
                 court = traduire(court, it["langue"])
