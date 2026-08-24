@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Veille Attijariwafa bank -> Telegram
-100% gratuit : GitHub Actions (cron) + RSS + Telegram Bot API.
-
-Etat persistant : seen.json, commit dans le depot a chaque run.
+Veille -> Telegram (canal unique, articles tagues par sujet)
+  AWB   : Attijariwafa bank et filiales
+  TN    : secteur bancaire tunisien
+  SOUV  : risque souverain, macro et politique monetaire (FR / EN / AR)
 """
 
 import os, json, time, hashlib, html, re, sys
@@ -14,74 +14,158 @@ import urllib.request
 import feedparser
 
 # ----------------------------------------------------------------------
-# 1. DICTIONNAIRE D'ENTITES  -> a completer/elaguer selon vos priorites
+# LOCALES
 # ----------------------------------------------------------------------
-ENTITES = {
-    # requete Google News              : poids (score de pertinence)
-    '"Attijariwafa bank"'              : 10,
-    '"Attijariwafa"'                   : 8,
-    '"التجاري وفا بنك"'                 : 10,
-    '"Attijari bank" Tunisie'          : 9,
-    '"Attijariwafa bank Europe"'       : 7,
-    '"Wafa Assurance"'                 : 6,
-    '"Wafasalaf"'                      : 5,
-    '"Wafacash"'                       : 5,
-    '"Attijari bank Egypt" OR "Attijariwafa Egypt"' : 6,
-    '"CBAO" Attijariwafa'              : 6,
-    '"Societe Ivoirienne de Banque" OR "SIB" Attijariwafa' : 5,
-    '"Union Gabonaise de Banque" OR "UGB" Attijariwafa'    : 5,
-    '"BIA Gabon"'                      : 4,
-    '"Mohamed El Kettani"'             : 9,   # PDG - signal dirigeant
-}
+L_MA   = [("fr", "MA", "MA:fr"), ("ar", "MA", "MA:ar"), ("fr", "FR", "FR:fr"),
+          ("fr", "TN", "TN:fr"), ("en", "US", "US:en")]
+L_TN   = [("fr", "TN", "TN:fr"), ("ar", "TN", "TN:ar"), ("fr", "FR", "FR:fr")]
+L_SOUV = [("fr", "FR", "FR:fr"), ("en", "US", "US:en")]
+L_AR   = [("ar", "EG", "EG:ar"), ("ar", "TN", "TN:ar")]
 
-# Locales interrogees (un meme mot-cle donne des resultats differents par pays)
-LOCALES = [
-    ("fr", "MA", "MA:fr"),   # Maroc francophone
-    ("fr", "TN", "TN:fr"),   # Tunisie
-    ("fr", "FR", "FR:fr"),   # France / presse Afrique basee a Paris
-    ("ar", "MA", "MA:ar"),   # Maroc arabophone
-    ("en", "US", "US:en"),   # presse anglophone / agences
+# ----------------------------------------------------------------------
+# SUJETS
+# ----------------------------------------------------------------------
+SUJETS = [
+    {
+        "tag": "🟦 AWB",
+        "locales": L_MA,
+        "motif": r"attijari|التجاري وفا|وفا بنك|wafasalaf|wafacash|wafa assurance|el kettani",
+        "requetes": {
+            '"Attijariwafa bank"': 10,
+            '"Attijariwafa"': 8,
+            '"التجاري وفا بنك"': 10,
+            '"Attijari bank" Tunisie': 9,
+            '"Attijariwafa bank Europe"': 7,
+            '"Wafa Assurance"': 6,
+            '"Wafasalaf"': 5,
+            '"Wafacash"': 5,
+            '"CBAO" Attijariwafa': 6,
+            '"Mohamed El Kettani"': 9,
+        },
+    },
+    {
+        "tag": "🟨 TN",
+        "locales": L_TN,
+        "motif": (r"\bbiat\b|amen bank|banque de tunisie|\bbna\b|banque nationale agricole|"
+                  r"\bstb\b|societe tunisienne de banque|\bbh bank\b|banque de l.habitat|"
+                  r"\buib\b|\bubci\b|arab tunisian|\batb\b|zitouna|al ?baraka|wifak|qnb|"
+                  r"banque centrale de tunisie|\bbct\b|secteur bancaire tunisien|aptbef|بنك|البنك"),
+        "requetes": {
+            '"BIAT" Tunisie': 8,
+            '"Amen Bank"': 8,
+            '"Banque de Tunisie"': 8,
+            '"Banque Nationale Agricole" OR "BNA Bank" Tunisie': 8,
+            '"Societe Tunisienne de Banque" OR "STB Bank"': 8,
+            '"BH Bank" OR "Banque de l\'Habitat" Tunisie': 8,
+            '"UIB" Tunisie': 7,
+            '"UBCI" Tunisie': 7,
+            '"Arab Tunisian Bank"': 7,
+            '"Banque Zitouna" OR "Zitouna Bank"': 7,
+            '"Al Baraka Bank" Tunisie': 6,
+            '"Wifak Bank"': 6,
+            '"QNB Tunisie"': 6,
+            '"Banque Centrale de Tunisie"': 9,
+            '"secteur bancaire tunisien"': 8,
+            '"البنك المركزي التونسي"': 9,
+        },
+    },
+    # ------------------------------------------------------------------
+    # SOUVERAIN - volet latin (FR / EN)
+    # ------------------------------------------------------------------
+    {
+        "tag": "🟩 SOUV",
+        "locales": L_SOUV,
+        "seuil": 13,
+        "motif": (r"tunisi|maroc|moroc|égypt|egypt|algéri|algeri|liby|mauritani|"
+                  r"côte d.ivoire|ivoir|cameroun|cameroon|sénégal|senegal|gabon|"
+                  r"turqu|turkey|türkiye"),
+        "motif_et": (r"fitch|moody|s&p|standard & poor|notation|rating|outlook|"
+                     r"\bfmi\b|\bimf\b|eurobond|sukuk|obligation souveraine|sovereign|"
+                     r"spread|\bcds\b|taux directeur|policy rate|politique monétaire|"
+                     r"monetary policy|banque centrale|central bank|inflation|"
+                     r"déficit budgétaire|budget deficit|dette publique|public debt|"
+                     r"défaut|default|restructuration|restructuring|"
+                     r"balance des paiements|réserves de change|foreign reserves|dévaluation"),
+        "requetes": {
+            'Tunisie notation souveraine OR FMI OR eurobond': 9,
+            'Maroc notation souveraine OR "taux directeur" OR eurobond': 8,
+            'Egypte notation souveraine OR FMI OR eurobond': 8,
+            'Algérie "dette publique" OR "déficit budgétaire" OR inflation': 7,
+            'Libye "banque centrale" OR "réserves de change"': 6,
+            'Mauritanie FMI OR "dette publique" OR notation': 6,
+            '"Côte d\'Ivoire" eurobond OR notation OR FMI': 8,
+            'Cameroun FMI OR "dette publique" OR notation': 7,
+            'Sénégal eurobond OR FMI OR notation OR "dette publique"': 8,
+            'Gabon eurobond OR notation OR "dette publique"': 7,
+            'Turquie "taux directeur" OR "politique monétaire" OR inflation': 8,
+            'Egypt sovereign rating OR IMF programme': 7,
+            'Turkey central bank policy rate': 7,
+            'Senegal OR Gabon OR Cameroon sovereign rating': 7,
+        },
+    },
+    # ------------------------------------------------------------------
+    # SOUVERAIN - volet arabophone
+    # ------------------------------------------------------------------
+    {
+        "tag": "🟩 SOUV",
+        "locales": L_AR,
+        "seuil": 13,
+        "motif": (r"تونس|مغرب|\bمصر\b|مصري|جزائر|ليبي|موريتاني|"
+                  r"ساحل العاج|كوت ديفوار|كاميرون|سنغال|غابون|تركي"),
+        "motif_et": (r"التصنيف السيادي|التصنيف الائتماني|صندوق النقد|"
+                     r"سندات دولية|سندات سيادية|صكوك|"
+                     r"السياسة النقدية|سعر الفائدة|نسبة الفائدة|البنك المركزي|"
+                     r"التضخم|الدين العام|عجز الميزانية|احتياطي النقد|"
+                     r"العملة الصعبة|تخفيض قيمة|فيتش|موديز"),
+        "requetes": {
+            'تونس "التصنيف السيادي" OR "صندوق النقد الدولي"': 9,
+            'المغرب "التصنيف الائتماني" OR "السياسة النقدية"': 8,
+            'مصر "صندوق النقد الدولي" OR "سندات دولية"': 8,
+            'الجزائر "الدين العام" OR "التضخم"': 7,
+            'ليبيا "البنك المركزي" OR "احتياطي النقد"': 6,
+            'موريتانيا "صندوق النقد الدولي" OR "الدين العام"': 6,
+            'تركيا "سعر الفائدة" OR "السياسة النقدية"': 8,
+            'السنغال OR الكاميرون OR الغابون "صندوق النقد الدولي"': 6,
+        },
+    },
 ]
 
 # ----------------------------------------------------------------------
-# 2. FLUX RSS NATIFS  -> a completer. Testez chaque URL avant de l'ajouter.
-#    (voir README : commande de test)
-# ----------------------------------------------------------------------
-FLUX_NATIFS = [
-    # ("Nom affiche", "url du flux"),
-    # ex : ("Medias24", "https://medias24.com/feed/"),
-    # ex : ("Le Boursier", "https://www.leboursier.ma/feed"),
-    # ex : ("Financial Afrik", "https://financialafrik.com/feed/"),
-]
-
-# ----------------------------------------------------------------------
-# 3. ANTI-BRUIT
+# ANTI-BRUIT
 # ----------------------------------------------------------------------
 BRUIT = [
     r"offre d.emploi", r"recrutement", r"recrute", r"stage rémunéré",
     r"horaires d.ouverture", r"code promo", r"jeu concours", r"tombola",
     r"agence la plus proche", r"guichet automatique",
-    r"وظائف", r"توظيف",
+    r"coupe du monde", r"championnat", r"demi-finale", r"but contre",
+    r"وظائف", r"توظيف", r"كأس العالم", r"مباراة",
 ]
 BRUIT_RE = re.compile("|".join(BRUIT), re.IGNORECASE)
 
-# Mots qui remontent le score : c'est la que se trouve l'info a valeur
+# ----------------------------------------------------------------------
+# SIGNAUX FORTS (remontent le score)
+# ----------------------------------------------------------------------
 SIGNAUX_FORTS = {
-    r"résultat|bénéfice|PNB|RBE|coût du risque|dividende" : 5,
-    r"AMMC|note d.information|émission obligataire|augmentation de capital|OPA|OPV" : 6,
-    r"Fitch|Moody.s|S&P|notation|rating|outlook" : 6,
-    r"acquisition|cession|prise de participation|filiale|rachat" : 5,
-    r"nomination|conseil d.administration|directoire|démission" : 4,
-    r"Bank Al-Maghrib|BCT|BCEAO|régulateur|sanction|amende" : 5,
-    r"cyber|fraude|litige|procès|enquête" : 6,
+    r"résultat|bénéfice|PNB|RBE|coût du risque|dividende": 5,
+    r"AMMC|CMF|note d.information|émission obligataire|augmentation de capital|OPA|OPV": 6,
+    r"Fitch|Moody.s|S&P|notation|rating|outlook|فيتش|موديز|التصنيف": 6,
+    r"acquisition|cession|prise de participation|filiale|rachat": 5,
+    r"nomination|conseil d.administration|directoire|démission": 4,
+    r"Bank Al-Maghrib|BCT|BCEAO|régulateur|sanction|amende": 5,
+    r"cyber|fraude|litige|procès|enquête": 6,
+    r"\bFMI\b|\bIMF\b|صندوق النقد": 6,
+    r"eurobond|sukuk|صكوك|سندات دولية": 6,
+    r"taux directeur|policy rate|نسبة الفائدة|سعر الفائدة": 6,
+    r"défaut|default|restructuration|restructuring|rééchelonnement": 7,
+    r"spread|\bCDS\b|dévaluation|تخفيض قيمة": 6,
 }
 SIGNAUX_RE = [(re.compile(p, re.IGNORECASE), w) for p, w in SIGNAUX_FORTS.items()]
 
 # ----------------------------------------------------------------------
 SEUIL_SCORE = int(os.environ.get("SEUIL_SCORE", "8"))
-FENETRE_H   = int(os.environ.get("FENETRE_H", "48"))   # ignorer plus vieux que X h
+FENETRE_H   = int(os.environ.get("FENETRE_H", "48"))
 SEEN_FILE   = "seen.json"
-MAX_SEEN    = 4000
+MAX_SEEN    = 8000
 TG_TOKEN    = os.environ.get("TELEGRAM_TOKEN")
 TG_CHAT     = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -92,12 +176,10 @@ def gnews_url(query, hl, gl, ceid):
 
 
 def norm_titre(t):
-    """Normalisation agressive pour deduplication inter-sites."""
     t = html.unescape(t or "").lower()
-    t = re.sub(r"\s*[-|–—]\s*[^-|–—]{2,40}$", "", t)   # retire " - Nom du site"
+    t = re.sub(r"\s*[-|–—]\s*[^-|–—]{2,40}$", "", t)
     t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
+    return re.sub(r"\s+", " ", t).strip()
 
 
 def cle(titre):
@@ -130,7 +212,7 @@ def sauver_seen(seen):
 
 def envoyer(texte):
     if not TG_TOKEN or not TG_CHAT:
-        print("[DRY-RUN]", texte[:200].replace("\n", " | "))
+        print("[DRY-RUN]", texte[:180].replace("\n", " | "))
         return True
     data = json.dumps({
         "chat_id": TG_CHAT, "text": texte,
@@ -148,57 +230,63 @@ def envoyer(texte):
 
 
 def collecter():
-    items, limite = [], datetime.now(timezone.utc) - timedelta(hours=FENETRE_H)
+    items = []
+    limite = datetime.now(timezone.utc) - timedelta(hours=FENETRE_H)
 
-    sources = []
-    for q, poids in ENTITES.items():
-        for hl, gl, ceid in LOCALES:
-            sources.append((f"GNews {gl}", gnews_url(q, hl, gl, ceid), poids))
-    for nom, url in FLUX_NATIFS:
-        sources.append((nom, url, 6))
+    for sujet in SUJETS:
+        motif = re.compile(sujet["motif"], re.IGNORECASE)
+        motif_et = re.compile(sujet["motif_et"], re.IGNORECASE) if sujet.get("motif_et") else None
+        seuil_sujet = sujet.get("seuil", SEUIL_SCORE)
+        n_sujet = 0
 
-    for nom, url, poids in sources:
-        try:
-            d = feedparser.parse(url)
-        except Exception as e:
-            print(f"  ! echec {nom}: {e}", file=sys.stderr)
-            continue
-        for e in d.entries[:40]:
-            titre = html.unescape(getattr(e, "title", "") or "")
-            resume = re.sub(r"<[^>]+>", " ", getattr(e, "summary", "") or "")[:400]
-            lien = getattr(e, "link", "")
-            if not titre or not lien:
-                continue
-
-            # filtre pertinence applique a TOUTES les sources, y compris Google News
-            if not re.search(r"attijari|التجاري وفا|وفا بنك|wafa", f"{titre} {resume}", re.I):
-                continue
-
-            if BRUIT_RE.search(f"{titre} {resume}"):
-                continue
-
-            pub = getattr(e, "published_parsed", None) or getattr(e, "updated_parsed", None)
-            if pub:
-                dt = datetime.fromtimestamp(time.mktime(pub), tz=timezone.utc)
-                if dt < limite:
+        for q, poids in sujet["requetes"].items():
+            for hl, gl, ceid in sujet["locales"]:
+                try:
+                    d = feedparser.parse(gnews_url(q, hl, gl, ceid))
+                except Exception as ex:
+                    print(f"  ! echec {q[:30]} {gl}: {ex}", file=sys.stderr)
                     continue
-            else:
-                dt = datetime.now(timezone.utc)
 
-            items.append({
-                "cle": cle(titre), "titre": titre.strip(), "lien": lien,
-                "source": nom, "date": dt, "score": score(titre, resume, poids),
-            })
-        time.sleep(0.4)   # politesse
+                for e in d.entries[:40]:
+                    titre = html.unescape(getattr(e, "title", "") or "")
+                    resume = re.sub(r"<[^>]+>", " ", getattr(e, "summary", "") or "")[:400]
+                    lien = getattr(e, "link", "")
+                    if not titre or not lien:
+                        continue
+
+                    txt = f"{titre} {resume}"
+                    if not motif.search(txt):
+                        continue
+                    if motif_et and not motif_et.search(txt):
+                        continue
+                    if BRUIT_RE.search(txt):
+                        continue
+
+                    pub = (getattr(e, "published_parsed", None)
+                           or getattr(e, "updated_parsed", None))
+                    if pub:
+                        dt = datetime.fromtimestamp(time.mktime(pub), tz=timezone.utc)
+                        if dt < limite:
+                            continue
+                    else:
+                        dt = datetime.now(timezone.utc)
+
+                    items.append({
+                        "cle": cle(titre), "titre": titre.strip(), "lien": lien,
+                        "tag": sujet["tag"], "source": f"GNews {gl}", "date": dt,
+                        "score": score(titre, resume, poids), "seuil": seuil_sujet,
+                    })
+                    n_sujet += 1
+                time.sleep(0.35)
+        print(f"  {sujet['tag']} ({sujet['locales'][0][0]}) : {n_sujet} items retenus")
     return items
 
 
 def main():
     seen = charger_seen()
     items = collecter()
-    print(f"{len(items)} items bruts collectes")
+    print(f"{len(items)} items pertinents collectes")
 
-    # deduplication : on garde la meilleure occurrence par cle
     uniques = {}
     for it in items:
         k = it["cle"]
@@ -207,25 +295,24 @@ def main():
         if k not in uniques or it["score"] > uniques[k]["score"]:
             uniques[k] = it
 
-    retenus = [it for it in uniques.values() if it["score"] >= SEUIL_SCORE]
-    retenus.sort(key=lambda x: (-x["score"], x["date"]))
-    print(f"{len(uniques)} uniques nouveaux -> {len(retenus)} au-dessus du seuil {SEUIL_SCORE}")
+    retenus = [it for it in uniques.values() if it["score"] >= it["seuil"]]
+    retenus.sort(key=lambda x: (x["tag"], -x["score"], x["date"]))
+    print(f"{len(uniques)} uniques nouveaux -> {len(retenus)} au-dessus du seuil")
 
     if not retenus:
         return
 
     envoyes = 0
-    for it in retenus[:25]:
-        etoiles = "🔴" if it["score"] >= 18 else ("🟠" if it["score"] >= 13 else "⚪️")
-        msg = (f"{etoiles} <b>{html.escape(it['titre'])}</b>\n"
+    for it in retenus[:30]:
+        alerte = "🔴" if it["score"] >= 20 else ("🟠" if it["score"] >= 15 else "⚪️")
+        msg = (f"{it['tag']} {alerte} <b>{html.escape(it['titre'])}</b>\n"
                f"<i>{html.escape(it['source'])} · {it['date'].strftime('%d/%m %H:%M')} "
                f"· score {it['score']}</i>\n{it['lien']}")
         if envoyer(msg):
             seen[it["cle"]] = int(time.time())
             envoyes += 1
-        time.sleep(1.2)   # limite Telegram ~30 msg/s, on reste tres en dessous
+        time.sleep(1.2)
 
-    # on marque aussi comme vus les items sous le seuil, pour ne pas les rescorer
     for it in uniques.values():
         seen.setdefault(it["cle"], int(time.time()))
 
