@@ -2,9 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 Veille -> Telegram (canal unique, articles tagues par sujet)
+
   AWB   : Attijariwafa bank et filiales
   TN    : secteur bancaire tunisien
   SOUV  : risque souverain, macro et politique monetaire (FR / EN / AR)
+  TECH  : use cases technologiques internationaux dans la banque/finance
+
+Etat persistant : seen.json, recommit a chaque run.
 """
 
 import os, json, time, hashlib, html, re, sys
@@ -13,19 +17,25 @@ from urllib.parse import quote_plus
 import urllib.request
 import feedparser
 
-# ----------------------------------------------------------------------
+# ======================================================================
 # LOCALES
-# ----------------------------------------------------------------------
-L_MA   = [("fr", "MA", "MA:fr"), ("ar", "MA", "MA:ar"), ("fr", "FR", "FR:fr"),
-          ("fr", "TN", "TN:fr"), ("en", "US", "US:en")]
-L_TN   = [("fr", "TN", "TN:fr"), ("ar", "TN", "TN:ar"), ("fr", "FR", "FR:fr")]
-L_SOUV = [("fr", "FR", "FR:fr"), ("en", "US", "US:en")]
-L_AR   = [("ar", "EG", "EG:ar"), ("ar", "TN", "TN:ar")]
+# ======================================================================
+L_MA    = [("fr", "MA", "MA:fr"), ("ar", "MA", "MA:ar"), ("fr", "FR", "FR:fr"),
+           ("fr", "TN", "TN:fr"), ("en", "US", "US:en")]
+L_TN    = [("fr", "TN", "TN:fr"), ("ar", "TN", "TN:ar"), ("fr", "FR", "FR:fr")]
+L_SOUV  = [("fr", "FR", "FR:fr"), ("en", "US", "US:en")]
+L_AR    = [("ar", "EG", "EG:ar"), ("ar", "TN", "TN:ar")]
+L_TECH  = [("en", "US", "US:en"), ("en", "GB", "GB:en"), ("fr", "FR", "FR:fr")]
 
-# ----------------------------------------------------------------------
+# ======================================================================
 # SUJETS
-# ----------------------------------------------------------------------
+#   motif      : condition necessaire (OU interne)
+#   motif_et   : seconde condition necessaire, optionnelle
+#   seuil      : score minimal pour declencher un envoi
+#   flux       : flux RSS natifs a ajouter au sujet (optionnel)
+# ======================================================================
 SUJETS = [
+    # ------------------------------------------------------------------
     {
         "tag": "🟦 AWB",
         "locales": L_MA,
@@ -42,7 +52,9 @@ SUJETS = [
             '"CBAO" Attijariwafa': 6,
             '"Mohamed El Kettani"': 9,
         },
+        "flux": [],
     },
+    # ------------------------------------------------------------------
     {
         "tag": "🟨 TN",
         "locales": L_TN,
@@ -68,9 +80,10 @@ SUJETS = [
             '"secteur bancaire tunisien"': 8,
             '"البنك المركزي التونسي"': 9,
         },
+        "flux": [],
     },
     # ------------------------------------------------------------------
-    # SOUVERAIN - volet latin (FR / EN)
+    # SOUVERAIN - volet latin
     # ------------------------------------------------------------------
     {
         "tag": "🟩 SOUV",
@@ -102,6 +115,7 @@ SUJETS = [
             'Turkey central bank policy rate': 7,
             'Senegal OR Gabon OR Cameroon sovereign rating': 7,
         },
+        "flux": [],
     },
     # ------------------------------------------------------------------
     # SOUVERAIN - volet arabophone
@@ -127,24 +141,103 @@ SUJETS = [
             'تركيا "سعر الفائدة" OR "السياسة النقدية"': 8,
             'السنغال OR الكاميرون OR الغابون "صندوق النقد الدولي"': 6,
         },
+        "flux": [],
+    },
+    # ------------------------------------------------------------------
+    # TECH - use cases internationaux
+    # ------------------------------------------------------------------
+    {
+        "tag": "🟪 TECH",
+        "locales": L_TECH,
+        "seuil": 12,
+        "motif": (r"bank|banking|finance|financial|payment|paiement|fintech|"
+                  r"insurance|assurance|lending|credit|treasury|capital market|"
+                  r"banque|crédit|marché|deposit|dépôt|transaction|wallet|"
+                  r"settlement|clearing|custody|tokeni[sz]|stablecoin|\bcbdc\b|\bmnbc\b|"
+                  r"blockchain|ledger|core banking|\bkyc\b|\baml\b|fraud|fraude|"
+                  r"trading|exchange|remittance|virement|compensation|"
+                  r"\bpix\b|\bupi\b|swift|iso ?20022|neobank|néobanque|"
+                  r"jpmorgan|goldman|citigroup|\bhsbc\b|\bbnp\b|santander|\bdbs\b|"
+                  r"\becb\b|\bbce\b|\bfed\b|\bboe\b|\bbis\b|\bmas\b|\bfca\b|\bocc\b"),
+        "motif_et": (r"deploy(?:s|ed|ment)?|roll(?:s|ed)? out|go(?:es)? live|went live|"
+                     r"in production|pilot|proof of concept|\bpoc\b|case study|"
+                     r"processed \d|handles \d|migrat(?:e|es|ed|ion)|implementation|"
+                     r"results show|reduced .{0,25} by \d|cut .{0,25} by \d|\d+ ?% |"
+                     r"lessons|post-?mortem|benchmark|outage|failure|abandon(?:s|ed)?|"
+                     r"scrap(?:s|ped)?|mandate|regulat(?:ion|or|ory)|licen[cs]e|"
+                     r"approv(?:e|es|ed|al)|greenlight|authoris|authoriz|adopts|"
+                     r"consultation|directive|ban(?:s|ned)|fine[sd]?|"
+                     r"acquir(?:e|es)|acquisition|merger|shut(?:s)? down|discontinue|"
+                     r"déploie|mise en production|pilote|retour d.expérience|"
+                     r"agrément|autorisation|sanction"),
+        "requetes": {
+            'bank deploys AI production': 8,
+            'bank core banking migration': 8,
+            'tokenized deposits bank live': 9,
+            'CBDC pilot central bank': 9,
+            'instant payments rollout': 8,
+            'open banking regulation': 8,
+            'stablecoin bank licence': 9,
+            'agentic AI bank pilot': 8,
+            'bank AI project failure OR abandoned': 9,
+            'ISO 20022 migration bank': 7,
+            'fraud detection AI bank results': 8,
+            'quantum computing bank pilot': 7,
+            'digital identity bank rollout': 7,
+            'embedded finance platform bank': 7,
+            'banque déploiement intelligence artificielle': 7,
+            'banque migration système information': 7,
+        },
+        # Flux natifs a haute valeur : testez chaque URL avant de l'activer
+        #   curl -s "https://www.finextra.com/rss/headlines.aspx" | head -20
+        "flux": [
+            # ("Finextra", "https://www.finextra.com/rss/headlines.aspx", 9),
+            # ("The Paypers", "https://thepaypers.com/rss", 8),
+            # ("Banking Dive", "https://www.bankingdive.com/feeds/news/", 8),
+        ],
     },
 ]
 
-# ----------------------------------------------------------------------
-# ANTI-BRUIT
-# ----------------------------------------------------------------------
+# ======================================================================
+# FILTRES TRANSVERSES
+# ======================================================================
 BRUIT = [
     r"offre d.emploi", r"recrutement", r"recrute", r"stage rémunéré",
     r"horaires d.ouverture", r"code promo", r"jeu concours", r"tombola",
     r"agence la plus proche", r"guichet automatique",
-    r"coupe du monde", r"championnat", r"demi-finale", r"but contre",
+    r"coupe du monde", r"championnat", r"demi-finale",
+    r"cours du bitcoin", r"prix du bitcoin", r"bitcoin atteint",
+    r"meilleures cryptos", r"comment investir", r"guide d.achat", r"parrainage",
     r"وظائف", r"توظيف", r"كأس العالم", r"مباراة",
 ]
 BRUIT_RE = re.compile("|".join(BRUIT), re.IGNORECASE)
 
-# ----------------------------------------------------------------------
-# SIGNAUX FORTS (remontent le score)
-# ----------------------------------------------------------------------
+# Fils de communiques de presse et fermes de contenu : rejet sur le nom du media
+SRC_EXCLUES = re.compile(
+    r"pr ?newswire|business ?wire|globe ?newswire|ein ?presswire|accesswire|prweb|"
+    r"openpr|newsfile|issuewire|analytics ?insight|cryptopolitan|bitcoinist|"
+    r"coinpedia|ambcrypto|benzinga|zacks|simply ?wall|investing\.com|marketbeat|"
+    r"medium\.com|linkedin\.com|substack|blogspot", re.IGNORECASE)
+
+# Sources sectorielles serieuses : bonus de score
+SRC_QUALITE = re.compile(
+    r"finextra|american banker|banking dive|the banker|financial times|reuters|"
+    r"bloomberg|wall street journal|the economist|techcrunch|sifted|rest of world|"
+    r"nikkei|mit technology review|ieee|bank for international|fintech futures|"
+    r"the paypers|payments dive|central banking|risk\.net", re.IGNORECASE)
+
+# Marqueurs publicitaires / editoriaux sans valeur ajoutee
+PUB_RE = re.compile(
+    r"\bproud to\b|is pleased to|announces? (?:a )?(?:strategic )?partnership|"
+    r"named a leader|magic quadrant|forrester wave|wins? award|award-winning|"
+    r"top \d+|best \d+|\d+ ways|\d+ things|\d+ trends|what is |how to |"
+    r"the future of|thought leader|sponsored|webinar|white ?paper|ebook|"
+    r"register now|join us|unveils new|expands partnership|"
+    r"predictions for \d{4}|guide to|publi-?rédactionnel", re.IGNORECASE)
+
+# ======================================================================
+# SCORING
+# ======================================================================
 SIGNAUX_FORTS = {
     r"résultat|bénéfice|PNB|RBE|coût du risque|dividende": 5,
     r"AMMC|CMF|note d.information|émission obligataire|augmentation de capital|OPA|OPV": 6,
@@ -158,14 +251,20 @@ SIGNAUX_FORTS = {
     r"taux directeur|policy rate|نسبة الفائدة|سعر الفائدة": 6,
     r"défaut|default|restructuration|restructuring|rééchelonnement": 7,
     r"spread|\bCDS\b|dévaluation|تخفيض قيمة": 6,
+    r"levée de fonds|funding round|series [ABCD]\b|licorne|unicorn": 5,
+    r"agrément|licen[cs]e|sandbox|cadre réglementaire|regulatory framework": 6,
+    r"open banking|\bMNBC\b|\bCBDC\b|paiement instantané|instant payment": 6,
+    r"failure|abandoned|scrapped|outage|post-?mortem|lessons": 6,
+    r"went live|in production|rolled out|case study": 5,
 }
 SIGNAUX_RE = [(re.compile(p, re.IGNORECASE), w) for p, w in SIGNAUX_FORTS.items()]
 
-# ----------------------------------------------------------------------
+# ======================================================================
 SEUIL_SCORE = int(os.environ.get("SEUIL_SCORE", "8"))
 FENETRE_H   = int(os.environ.get("FENETRE_H", "48"))
 SEEN_FILE   = "seen.json"
 MAX_SEEN    = 8000
+MAX_ENVOIS  = int(os.environ.get("MAX_ENVOIS", "30"))
 TG_TOKEN    = os.environ.get("TELEGRAM_TOKEN")
 TG_CHAT     = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -173,6 +272,18 @@ TG_CHAT     = os.environ.get("TELEGRAM_CHAT_ID")
 def gnews_url(query, hl, gl, ceid):
     return (f"https://news.google.com/rss/search?q={quote_plus(query)}+when:2d"
             f"&hl={hl}&gl={gl}&ceid={ceid}")
+
+
+def source_de(entry, titre):
+    """Nom du media : champ <source> du flux, sinon suffixe ' - Media' du titre."""
+    s = ""
+    try:
+        s = getattr(entry.source, "title", "") or ""
+    except Exception:
+        pass
+    if not s and " - " in titre:
+        s = titre.rsplit(" - ", 1)[-1]
+    return s.strip()
 
 
 def norm_titre(t):
@@ -229,56 +340,81 @@ def envoyer(texte):
         return False
 
 
+def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items):
+    """Parse un flux et empile les entrees retenues dans items."""
+    try:
+        d = feedparser.parse(url)
+    except Exception as ex:
+        print(f"  ! echec {etiquette}: {ex}", file=sys.stderr)
+        return 0
+    n = 0
+    for e in d.entries[:40]:
+        titre = html.unescape(getattr(e, "title", "") or "")
+        resume = re.sub(r"<[^>]+>", " ", getattr(e, "summary", "") or "")[:400]
+        lien = getattr(e, "link", "")
+        if not titre or not lien:
+            continue
+
+        txt = f"{titre} {resume}"
+        media = source_de(e, titre)
+
+        if SRC_EXCLUES.search(media):
+            continue
+        if PUB_RE.search(txt):
+            continue
+        if not motif.search(txt):
+            continue
+        if motif_et and not motif_et.search(txt):
+            continue
+        if BRUIT_RE.search(txt):
+            continue
+
+        pub = (getattr(e, "published_parsed", None)
+               or getattr(e, "updated_parsed", None))
+        if pub:
+            dt = datetime.fromtimestamp(time.mktime(pub), tz=timezone.utc)
+            if dt < limite:
+                continue
+        else:
+            dt = datetime.now(timezone.utc)
+
+        bonus = 4 if SRC_QUALITE.search(media) else 0
+        items.append({
+            "cle": cle(titre), "titre": titre.strip(), "lien": lien,
+            "tag": sujet["tag"], "source": media or etiquette, "date": dt,
+            "score": score(titre, resume, poids) + bonus,
+            "seuil": sujet.get("seuil", SEUIL_SCORE),
+        })
+        n += 1
+    return n
+
+
 def collecter():
     items = []
     limite = datetime.now(timezone.utc) - timedelta(hours=FENETRE_H)
 
     for sujet in SUJETS:
         motif = re.compile(sujet["motif"], re.IGNORECASE)
-        motif_et = re.compile(sujet["motif_et"], re.IGNORECASE) if sujet.get("motif_et") else None
-        seuil_sujet = sujet.get("seuil", SEUIL_SCORE)
+        motif_et = (re.compile(sujet["motif_et"], re.IGNORECASE)
+                    if sujet.get("motif_et") else None)
         n_sujet = 0
 
         for q, poids in sujet["requetes"].items():
             for hl, gl, ceid in sujet["locales"]:
-                try:
-                    d = feedparser.parse(gnews_url(q, hl, gl, ceid))
-                except Exception as ex:
-                    print(f"  ! echec {q[:30]} {gl}: {ex}", file=sys.stderr)
-                    continue
-
-                for e in d.entries[:40]:
-                    titre = html.unescape(getattr(e, "title", "") or "")
-                    resume = re.sub(r"<[^>]+>", " ", getattr(e, "summary", "") or "")[:400]
-                    lien = getattr(e, "link", "")
-                    if not titre or not lien:
-                        continue
-
-                    txt = f"{titre} {resume}"
-                    if not motif.search(txt):
-                        continue
-                    if motif_et and not motif_et.search(txt):
-                        continue
-                    if BRUIT_RE.search(txt):
-                        continue
-
-                    pub = (getattr(e, "published_parsed", None)
-                           or getattr(e, "updated_parsed", None))
-                    if pub:
-                        dt = datetime.fromtimestamp(time.mktime(pub), tz=timezone.utc)
-                        if dt < limite:
-                            continue
-                    else:
-                        dt = datetime.now(timezone.utc)
-
-                    items.append({
-                        "cle": cle(titre), "titre": titre.strip(), "lien": lien,
-                        "tag": sujet["tag"], "source": f"GNews {gl}", "date": dt,
-                        "score": score(titre, resume, poids), "seuil": seuil_sujet,
-                    })
-                    n_sujet += 1
+                n_sujet += traiter_flux(gnews_url(q, hl, gl, ceid), sujet,
+                                        motif, motif_et, poids,
+                                        f"GNews {gl}", limite, items)
                 time.sleep(0.35)
-        print(f"  {sujet['tag']} ({sujet['locales'][0][0]}) : {n_sujet} items retenus")
+
+        for entree in sujet.get("flux", []):
+            nom, url = entree[0], entree[1]
+            poids = entree[2] if len(entree) > 2 else 7
+            n_sujet += traiter_flux(url, sujet, motif, motif_et, poids,
+                                    nom, limite, items)
+            time.sleep(0.35)
+
+        langue = sujet["locales"][0][0] if sujet["locales"] else "rss"
+        print(f"  {sujet['tag']} ({langue}) : {n_sujet} items retenus")
     return items
 
 
@@ -303,7 +439,7 @@ def main():
         return
 
     envoyes = 0
-    for it in retenus[:30]:
+    for it in retenus[:MAX_ENVOIS]:
         alerte = "🔴" if it["score"] >= 20 else ("🟠" if it["score"] >= 15 else "⚪️")
         msg = (f"{it['tag']} {alerte} <b>{html.escape(it['titre'])}</b>\n"
                f"<i>{html.escape(it['source'])} · {it['date'].strftime('%d/%m %H:%M')} "
