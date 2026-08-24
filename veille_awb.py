@@ -174,8 +174,8 @@ SUJETS = [
             'banque déploiement intelligence artificielle': 7,
             'banque migration système information': 7,
         },
-        # Flux natifs a haute valeur : testez chaque URL avant de l'activer
-        #   curl -s "https://www.finextra.com/rss/headlines.aspx" | head -20
+        # Flux natifs : liens editeur directs, donc traduction fiable.
+        # Testez avant d'activer :  curl -sI "URL" | head -3
         "flux": [
             # ("Finextra", "https://www.finextra.com/rss/headlines.aspx", 9),
             # ("The Paypers", "https://thepaypers.com/rss", 8),
@@ -343,11 +343,16 @@ def _varint(b, i):
     return None, i
 
 
-def resoudre_lien(url_gnews):
-    """URL reelle de l'editeur derriere un lien Google News. None si indechiffrable."""
+_CACHE_URL = {}
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
+
+
+def _decoder_b64(url_gnews):
+    """Ancien format d'identifiant : l'URL est en clair dans le protobuf."""
     m = re.search(r"/(?:rss/)?articles/([A-Za-z0-9_\-]+)", url_gnews)
     if not m:
-        return url_gnews if url_gnews.startswith("http") else None
+        return None
     ident = m.group(1)
     try:
         b = base64.urlsafe_b64decode(ident + "=" * (-len(ident) % 4))
@@ -375,10 +380,44 @@ def resoudre_lien(url_gnews):
     return None
 
 
+def _suivre_http(url):
+    """Suit la redirection Google News et extrait l'URL de l'editeur."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            final = r.geturl()
+            corps = r.read(200000).decode("utf-8", "ignore")
+    except Exception as ex:
+        print(f"  ! resolution echouee: {ex}", file=sys.stderr)
+        return None
+    if "news.google.com" not in final:
+        return final
+    m = re.search(r'data-n-au="(https?://[^"]+)"', corps)
+    if m:
+        return html.unescape(m.group(1))
+    m = re.search(r'<a[^>]+href="(https?://(?!\S*?google\.)[^"]+)"', corps)
+    if m:
+        return html.unescape(m.group(1))
+    return None
+
+
+def resoudre_lien(url_gnews):
+    """URL reelle de l'editeur. None si irrecuperable."""
+    if not url_gnews.startswith("http"):
+        return None
+    if "news.google.com" not in url_gnews:
+        return url_gnews
+    if url_gnews in _CACHE_URL:
+        return _CACHE_URL[url_gnews]
+    reel = _decoder_b64(url_gnews) or _suivre_http(url_gnews)
+    _CACHE_URL[url_gnews] = reel
+    return reel
+
+
 def lien_traduit(url, src="auto"):
     """Proxy translate.goog applique a une URL editeur. None si non resolue."""
     reel = resoudre_lien(url)
-    if not reel:
+    if not reel or "news.google.com" in reel:
         return None
     m = re.match(r"^https?://([^/?#]+)([^#]*)$", reel)
     if not m:
@@ -563,7 +602,9 @@ def main():
         vo = titre_propre(it["titre"], it["source"])
         meta = (f"{html.escape(it['source'])} · "
                 f"{it['date'].strftime('%d/%m %H:%M')} · score {it['score']}")
-        liens = [f"<a href=\"{html.escape(it['lien'], quote=True)}\">🔗 Source</a>"]
+
+        cible = resoudre_lien(it["lien"]) or it["lien"]
+        liens = [f"<a href=\"{html.escape(cible, quote=True)}\">🔗 Source</a>"]
 
         if it.get("langue", "fr") != "fr":
             titre_aff = traduire(vo, it["langue"])
