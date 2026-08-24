@@ -1,10 +1,16 @@
 name: Veille AWB
 
-on: {workflow_dispatch: {}, schedule: [{cron: '17 6,12,18 * * *'}]}
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6,12,18 * * *'
 
-permissions: {contents: write}
+permissions:
+  contents: write
 
-concurrency: {group: veille-awb, cancel-in-progress: false}
+concurrency:
+  group: veille-awb
+  cancel-in-progress: false
 
 jobs:
   veille:
@@ -12,13 +18,23 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
+
       - run: pip install feedparser
-      - name: Collecte et envoi Telegram
+
+      - run: python veille_awb.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SEUIL_SCORE: '8'
-          FENETRE_H: '48'
-          SCRIPT_B64: IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwojIC0qLSBjb2Rpbmc6IHV0Zi04IC0qLQoiIiIKVmVpbGxlIEF0dGlqYXJpd2FmYSBiYW5rIC0+IFRlbGVncmFtCjEwMCUgZ3JhdHVpdCA6IEdpdEh1YiBBY3Rpb25zIChjcm9uKSArIFJTUyArIFRlbGVncmFtIEJvdCBBUEkuCgpFdGF0IHBlcnNpc3RhbnQgOiBzZWVuLmpzb24sIGNvbW1pdCBkYW5zIGxlIGRlcG90IGEgY2hhcXVlIHJ1bi4KIiIiCgppbXBvcnQgb3MsIGpzb24sIHRpbWUsIGhhc2hsaWIsIGh0bWwsIHJlLCBzeXMKZnJvbSBkYXRldGltZSBpbXBvcnQgZGF0ZXRpbWUsIHRpbWV6b25lLCB0aW1lZGVsdGEKZnJvbSB1cmxsaWIucGFyc2UgaW1wb3J0IHF1b3RlX3BsdXMKaW1wb3J0IHVybGxpYi5yZXF1ZXN0CmltcG9ydCBmZWVkcGFyc2VyCgojIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KIyAxLiBESUNUSU9OTkFJUkUgRCdFTlRJVEVTICAtPiBhIGNvbXBsZXRlci9lbGFndWVyIHNlbG9uIHZvcyBwcmlvcml0ZXMKIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KRU5USVRFUyA9IHsKICAgICJBdHRpamFyaXdhZmEgYmFuayI6IDEwLAogICAgIkF0dGlqYXJpd2FmYSI6IDgsCiAgICAi2KfZhNiq2KzYp9ix2Yog2YjZgdinINio2YbZgyI6IDEwLAogICAgIkF0dGlqYXJpIGJhbmsgVHVuaXNpZSI6IDksCiAgICAiQXR0aWphcml3YWZhIGJhbmsgRXVyb3BlIjogNywKICAgICJXYWZhIEFzc3VyYW5jZSI6IDYsCiAgICAiV2FmYXNhbGFmIjogNSwKICAgICJXYWZhY2FzaCI6IDUsCiAgICAiQXR0aWphcmkgYmFuayBFZ3lwdCI6IDYsCiAgICAiQ0JBTyBBdHRpamFyaXdhZmEiOiA2LAogICAgIlNvY2lldGUgSXZvaXJpZW5uZSBkZSBCYW5xdWUgU0lCIjogNSwKICAgICJVbmlvbiBHYWJvbmFpc2UgZGUgQmFucXVlIFVHQiI6IDUsCiAgICAiQklBIEdhYm9uIjogNCwKICAgICJNb2hhbWVkIEVsIEtldHRhbmkiOiA5LAp9CkxPQ0FMRVMgPSBbCiAgICAoImZyIiwgIk1BIiwgIk1BOmZyIiksCiAgICAoImZyIiwgIlROIiwgIlROOmZyIiksCiAgICAoImZyIiwgIkZSIiwgIkZSOmZyIiksCiAgICAoImFyIiwgIk1BIiwgIk1BOmFyIiksCiAgICAoImVuIiwgIlVTIiwgIlVTOmVuIiksCl0KRkxVWF9OQVRJRlMgPSBbXQpCUlVJVCA9IFsKICAgIHIib2ZmcmUgZC5lbXBsb2kiLCByInJlY3J1dGVtZW50IiwgciJzdGFnZSIsCl0KUFJVSVR+UkUgPSByZS5jb21waWxlKCJ8Ii5qb2luKEJSVUlUKSwgcmUuSUdOT1JFQ0FTRSkKU0lHTkFVWF9GT1JUUyA9IHsKICAgIHIicmbDqXN1bHRhdHwiOiA1LAogICAgciJBTU1DfE9QQXxPUFYiOiA2LAogICAgciJmaXRjaHxtb29keXwiOiA2LAogICAgciJhY3F1aXNpdGlvbiI6IDUsCn0KU0lHTkFVWF9SRSA9IFsoKHJlLmNvbXBpbGUocCwgcmUuSUdOT1JFQ0FTRSksIHcpIGZvciBwLCB3IGluIFNJR05BVVhfRk9SVFMuaXRlbXMoKV0KU0VVSUxfU0NPUkUgPSBpbnQob3MuZW52aXJvbi5nZXQoIlNFVUlMX1NDT1JFIiwgIjgiKSkKRkVORVRSRV9IID0gaW50KG9zLmVudmlyb24uZ2V0KCJGRU5FVFJFX0giLCAiNDgiKSkKU0VFTl9GSUxFID0gInNlZW4uanNvbiIKVEdfVE9LRU4gPSBvcy5lbnZpcm9uLmdldCgiVEVMRUdSQU1fVE9LRU4iKQpUR19DSEFUID0gb3MuZW52aXJvbi5nZXQoIlRFTEVHUkFNX0NIQU1fSUQiKQpkZWYgZ25ld3NfdXJsKHEsIGgsIGcsIGMpOiByZXR1cm4gZiJodHRwczovL25ld3MuZ
+
+      - run: |
+          git config user.name "veille-bot"
+          git config user.email "veille-bot@users.noreply.github.com"
+          git add seen.json
+          git diff --staged --quiet && exit 0
+          git commit -m "state $(date -u +%F_%H:%M)"
+          git pull --rebase --autostash
+          git push
