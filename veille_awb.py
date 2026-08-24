@@ -170,10 +170,9 @@ def collecter():
             if not titre or not lien:
                 continue
 
-            # filtre pertinence pour les flux natifs (non filtres par requete)
-            if nom not in ("GNews MA", "GNews TN", "GNews FR", "GNews US"):
-                if not re.search(r"attijari|وفا|wafa", f"{titre} {resume}", re.I):
-                    continue
+            # filtre pertinence applique a TOUTES les sources, y compris Google News
+            if not re.search(r"attijari|التجاري وفا|وفا بنك|wafa", f"{titre} {resume}", re.I):
+                continue
 
             if BRUIT_RE.search(f"{titre} {resume}"):
                 continue
