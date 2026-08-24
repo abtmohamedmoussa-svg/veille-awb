@@ -8,11 +8,11 @@ Veille -> Telegram (canal unique, articles tagues par sujet)
   SOUV  : risque souverain, macro et politique monetaire (FR / EN / AR)
   TECH  : use cases technologiques internationaux dans la banque/finance
 
-Les articles non francophones sont traduits (titre + lien proxy translate.goog).
+Articles non francophones : titre traduit + lien vers la version traduite.
 Etat persistant : seen.json, recommit a chaque run.
 """
 
-import os, json, time, hashlib, html, re, sys
+import os, json, time, hashlib, html, re, sys, base64
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote_plus
 import urllib.request
@@ -30,13 +30,8 @@ L_TECH  = [("en", "US", "US:en"), ("en", "GB", "GB:en"), ("fr", "FR", "FR:fr")]
 
 # ======================================================================
 # SUJETS
-#   motif      : condition necessaire (OU interne)
-#   motif_et   : seconde condition necessaire, optionnelle
-#   seuil      : score minimal pour declencher un envoi
-#   flux       : flux RSS natifs a ajouter au sujet (optionnel)
 # ======================================================================
 SUJETS = [
-    # ------------------------------------------------------------------
     {
         "tag": "🟦 AWB",
         "locales": L_MA,
@@ -55,7 +50,6 @@ SUJETS = [
         },
         "flux": [],
     },
-    # ------------------------------------------------------------------
     {
         "tag": "🟨 TN",
         "locales": L_TN,
@@ -83,9 +77,6 @@ SUJETS = [
         },
         "flux": [],
     },
-    # ------------------------------------------------------------------
-    # SOUVERAIN - volet latin
-    # ------------------------------------------------------------------
     {
         "tag": "🟩 SOUV",
         "locales": L_SOUV,
@@ -118,9 +109,6 @@ SUJETS = [
         },
         "flux": [],
     },
-    # ------------------------------------------------------------------
-    # SOUVERAIN - volet arabophone
-    # ------------------------------------------------------------------
     {
         "tag": "🟩 SOUV",
         "locales": L_AR,
@@ -144,9 +132,6 @@ SUJETS = [
         },
         "flux": [],
     },
-    # ------------------------------------------------------------------
-    # TECH - use cases internationaux
-    # ------------------------------------------------------------------
     {
         "tag": "🟪 TECH",
         "locales": L_TECH,
@@ -213,21 +198,18 @@ BRUIT = [
 ]
 BRUIT_RE = re.compile("|".join(BRUIT), re.IGNORECASE)
 
-# Fils de communiques de presse et fermes de contenu : rejet sur le nom du media
 SRC_EXCLUES = re.compile(
     r"pr ?newswire|business ?wire|globe ?newswire|ein ?presswire|accesswire|prweb|"
     r"openpr|newsfile|issuewire|analytics ?insight|cryptopolitan|bitcoinist|"
     r"coinpedia|ambcrypto|benzinga|zacks|simply ?wall|investing\.com|marketbeat|"
     r"medium\.com|linkedin\.com|substack|blogspot", re.IGNORECASE)
 
-# Sources sectorielles serieuses : bonus de score
 SRC_QUALITE = re.compile(
     r"finextra|american banker|banking dive|the banker|financial times|reuters|"
     r"bloomberg|wall street journal|the economist|techcrunch|sifted|rest of world|"
     r"nikkei|mit technology review|ieee|bank for international|fintech futures|"
     r"the paypers|payments dive|central banking|risk\.net", re.IGNORECASE)
 
-# Marqueurs publicitaires / editoriaux sans valeur ajoutee
 PUB_RE = re.compile(
     r"\bproud to\b|is pleased to|announces? (?:a )?(?:strategic )?partnership|"
     r"named a leader|magic quadrant|forrester wave|wins? award|award-winning|"
@@ -287,36 +269,120 @@ def source_de(entry, titre):
     return s.strip()
 
 
+# ----------------------------------------------------------------------
+# TRADUCTION
+# ----------------------------------------------------------------------
 TRADUIRE = os.environ.get("TRADUIRE", "1") == "1"
 _CACHE_TRAD = {}
+_ECHECS_GTX = [0]
+
+
+def _http_json(url, timeout=10):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _trad_gtx(texte, source):
+    url = ("https://translate.googleapis.com/translate_a/single"
+           f"?client=gtx&sl={source}&tl=fr&dt=t&q={quote_plus(texte)}")
+    data = _http_json(url)
+    return "".join(seg[0] for seg in data[0] if seg and seg[0])
+
+
+def _trad_mymemory(texte, source):
+    src = "en" if source in ("auto", "en") else source
+    url = ("https://api.mymemory.translated.net/get"
+           f"?q={quote_plus(texte)}&langpair={src}|fr")
+    data = _http_json(url)
+    return (data.get("responseData") or {}).get("translatedText") or ""
 
 
 def traduire(texte, source="auto"):
-    """Traduit vers le francais. En cas d'echec, renvoie le texte original."""
+    """Traduit vers le francais : gtx, puis MyMemory, sinon texte original."""
     if not TRADUIRE or not texte:
         return texte
+    texte = texte[:900]
     if texte in _CACHE_TRAD:
         return _CACHE_TRAD[texte]
-    url = ("https://translate.googleapis.com/translate_a/single"
-           f"?client=gtx&sl={source}&tl=fr&dt=t&q={quote_plus(texte[:900])}")
+
+    if _ECHECS_GTX[0] < 3:
+        try:
+            out = _trad_gtx(texte, source)
+            if out:
+                _CACHE_TRAD[texte] = out
+                return out
+        except Exception as ex:
+            _ECHECS_GTX[0] += 1
+            if _ECHECS_GTX[0] == 1:
+                print(f"  ! gtx indisponible ({ex}), bascule MyMemory", file=sys.stderr)
+
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        out = "".join(seg[0] for seg in data[0] if seg and seg[0])
-        _CACHE_TRAD[texte] = out or texte
-        return _CACHE_TRAD[texte]
+        out = _trad_mymemory(texte, source)
+        if out:
+            _CACHE_TRAD[texte] = out
+            return out
     except Exception as ex:
-        print(f"  ! traduction echouee: {ex}", file=sys.stderr)
-        _CACHE_TRAD[texte] = texte
-        return texte
+        print(f"  ! MyMemory indisponible ({ex})", file=sys.stderr)
+
+    _CACHE_TRAD[texte] = texte
+    return texte
+
+
+# ----------------------------------------------------------------------
+# RESOLUTION DES LIENS GOOGLE NEWS
+# ----------------------------------------------------------------------
+def _varint(b, i):
+    val = shift = 0
+    while i < len(b):
+        octet = b[i]; i += 1
+        val |= (octet & 0x7F) << shift
+        if not octet & 0x80:
+            return val, i
+        shift += 7
+    return None, i
+
+
+def resoudre_lien(url_gnews):
+    """URL reelle de l'editeur derriere un lien Google News. None si indechiffrable."""
+    m = re.search(r"/(?:rss/)?articles/([A-Za-z0-9_\-]+)", url_gnews)
+    if not m:
+        return url_gnews if url_gnews.startswith("http") else None
+    ident = m.group(1)
+    try:
+        b = base64.urlsafe_b64decode(ident + "=" * (-len(ident) % 4))
+    except Exception:
+        return None
+    i = 0
+    while i < len(b):
+        j = b.find(b"\x22", i)
+        if j < 0:
+            return None
+        longueur, k = _varint(b, j + 1)
+        if longueur is None or longueur <= 0 or k + longueur > len(b):
+            i = j + 1
+            continue
+        val = b[k:k + longueur]
+        if val[:4] == b"http":
+            try:
+                u = val.decode("utf-8")
+            except Exception:
+                i = j + 1
+                continue
+            if u.startswith("http"):
+                return u
+        i = j + 1
+    return None
 
 
 def lien_traduit(url, src="auto"):
-    """Passe l'URL par le proxy translate.goog."""
-    m = re.match(r"^https?://([^/?#]+)([^#]*)$", url)
+    """Proxy translate.goog applique a une URL editeur. None si non resolue."""
+    reel = resoudre_lien(url)
+    if not reel:
+        return None
+    m = re.match(r"^https?://([^/?#]+)([^#]*)$", reel)
     if not m:
-        return url
+        return None
     host, reste = m.group(1), m.group(2) or "/"
     if not reste.startswith("/"):
         reste = "/" + reste
@@ -324,6 +390,14 @@ def lien_traduit(url, src="auto"):
     sep = "&" if "?" in reste else "?"
     return (f"https://{host_tr}.translate.goog{reste}{sep}"
             f"_x_tr_sl={src}&_x_tr_tl=fr&_x_tr_hl=fr")
+
+
+# ----------------------------------------------------------------------
+def titre_propre(titre, media):
+    """Retire le suffixe ' - Media' redondant avec la ligne source."""
+    if media and titre.endswith(" - " + media):
+        return titre[: -(len(media) + 3)].strip()
+    return re.sub(r"\s+[-|–—]\s+[^-|–—]{2,40}$", "", titre).strip()
 
 
 def norm_titre(t):
@@ -367,7 +441,7 @@ def envoyer(texte):
         return True
     data = json.dumps({
         "chat_id": TG_CHAT, "text": texte,
-        "parse_mode": "HTML", "disable_web_page_preview": False,
+        "parse_mode": "HTML", "disable_web_page_preview": True,
     }).encode()
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -460,6 +534,10 @@ def collecter():
 
 
 def main():
+    if TRADUIRE:
+        essai = traduire("The central bank rolled out a new payment system", "en")
+        print(f"Autotest traduction : {essai[:70]}")
+
     seen = charger_seen()
     items = collecter()
     print(f"{len(items)} items pertinents collectes")
@@ -482,20 +560,25 @@ def main():
     envoyes = 0
     for it in retenus[:MAX_ENVOIS]:
         alerte = "🔴" if it["score"] >= 20 else ("🟠" if it["score"] >= 15 else "⚪️")
-        vo = it["titre"]
+        vo = titre_propre(it["titre"], it["source"])
         meta = (f"{html.escape(it['source'])} · "
                 f"{it['date'].strftime('%d/%m %H:%M')} · score {it['score']}")
+        liens = [f"<a href=\"{html.escape(it['lien'], quote=True)}\">🔗 Source</a>"]
+
         if it.get("langue", "fr") != "fr":
-            titre_fr = traduire(vo, it["langue"])
-            ligne_vo = f"<i>{html.escape(vo)}</i>\n" if titre_fr != vo else ""
-            msg = (f"{it['tag']} {alerte} <b>{html.escape(titre_fr)}</b>\n"
-                   f"{ligne_vo}"
-                   f"<i>{meta}</i>\n"
-                   f"🇫🇷 {lien_traduit(it['lien'], it['langue'])}\n"
-                   f"🔗 {it['lien']}")
+            titre_aff = traduire(vo, it["langue"])
+            ligne_vo = f"<i>{html.escape(vo)}</i>\n" if titre_aff != vo else ""
+            lfr = lien_traduit(it["lien"], it["langue"])
+            if lfr:
+                liens.insert(0, f"<a href=\"{html.escape(lfr, quote=True)}\">🇫🇷 Lire en français</a>")
         else:
-            msg = (f"{it['tag']} {alerte} <b>{html.escape(vo)}</b>\n"
-                   f"<i>{meta}</i>\n{it['lien']}")
+            titre_aff, ligne_vo = vo, ""
+
+        msg = (f"{it['tag']} {alerte} <b>{html.escape(titre_aff)}</b>\n"
+               f"{ligne_vo}"
+               f"<i>{meta}</i>\n"
+               + "  ·  ".join(liens))
+
         if envoyer(msg):
             seen[it["cle"]] = int(time.time())
             envoyes += 1
