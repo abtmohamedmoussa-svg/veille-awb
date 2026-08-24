@@ -8,7 +8,7 @@ Veille -> Telegram (canal unique, articles tagues par sujet)
   SOUV  : risque souverain, macro et politique monetaire (FR / EN / AR)
   TECH  : use cases technologiques internationaux dans la banque/finance
 
-Articles non francophones : titre traduit + lien vers la version traduite.
+Articles non francophones : titre + resume traduits, lien vers version traduite.
 Etat persistant : seen.json, recommit a chaque run.
 """
 
@@ -112,7 +112,7 @@ SUJETS = [
     {
         "tag": "🟩 SOUV",
         "locales": L_AR,
-        "seuil": 13,
+        "seuil": 16,
         "motif": (r"تونس|مغرب|\bمصر\b|مصري|جزائر|ليبي|موريتاني|"
                   r"ساحل العاج|كوت ديفوار|كاميرون|سنغال|غابون|تركي"),
         "motif_et": (r"التصنيف السيادي|التصنيف الائتماني|صندوق النقد|"
@@ -135,7 +135,7 @@ SUJETS = [
     {
         "tag": "🟪 TECH",
         "locales": L_TECH,
-        "seuil": 12,
+        "seuil": 15,
         "motif": (r"bank|banking|finance|financial|payment|paiement|fintech|"
                   r"insurance|assurance|lending|credit|treasury|capital market|"
                   r"banque|crédit|marché|deposit|dépôt|transaction|wallet|"
@@ -174,12 +174,10 @@ SUJETS = [
             'banque déploiement intelligence artificielle': 7,
             'banque migration système information': 7,
         },
-        # Flux natifs : liens editeur directs, donc traduction fiable.
-        # Testez avant d'activer :  curl -sI "URL" | head -3
+        # Flux natifs : liens editeur directs + vraies descriptions.
+        # Le filtre use-case (motif_et) ne s'y applique pas : source deja curee.
         "flux": [
-            # ("Finextra", "https://www.finextra.com/rss/headlines.aspx", 9),
-            # ("The Paypers", "https://thepaypers.com/rss", 8),
-            # ("Banking Dive", "https://www.bankingdive.com/feeds/news/", 8),
+            ("Finextra", "https://www.finextra.com/rss/headlines.aspx", 9),
         ],
     },
 ]
@@ -239,6 +237,9 @@ SIGNAUX_FORTS = {
     r"open banking|\bMNBC\b|\bCBDC\b|paiement instantané|instant payment": 6,
     r"failure|abandoned|scrapped|outage|post-?mortem|lessons": 6,
     r"went live|in production|rolled out|case study": 5,
+    r"tokeni[sz]|stablecoin|settlement|custody|distributed ledger|smart contract": 6,
+    r"appoints|names .{0,20}chief|chief \w+ officer|steps down": 4,
+    r"fund ?rais|valuation|\$\d+ ?(?:m|bn|billion|million)": 5,
 }
 SIGNAUX_RE = [(re.compile(p, re.IGNORECASE), w) for p, w in SIGNAUX_FORTS.items()]
 
@@ -294,6 +295,9 @@ def _trad_mymemory(texte, source):
     src = "en" if source in ("auto", "en") else source
     url = ("https://api.mymemory.translated.net/get"
            f"?q={quote_plus(texte)}&langpair={src}|fr")
+    mail = os.environ.get("MYMEMORY_MAIL", "")
+    if mail:
+        url += f"&de={quote_plus(mail)}"
     data = _http_json(url)
     return (data.get("responseData") or {}).get("translatedText") or ""
 
@@ -343,6 +347,7 @@ def _varint(b, i):
     return None, i
 
 
+RESOUDRE_HTTP = os.environ.get("RESOUDRE_HTTP", "0") == "1"
 _CACHE_URL = {}
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
@@ -409,7 +414,7 @@ def resoudre_lien(url_gnews):
         return url_gnews
     if url_gnews in _CACHE_URL:
         return _CACHE_URL[url_gnews]
-    reel = _decoder_b64(url_gnews) or _suivre_http(url_gnews)
+    reel = _decoder_b64(url_gnews) or (_suivre_http(url_gnews) if RESOUDRE_HTTP else None)
     _CACHE_URL[url_gnews] = reel
     return reel
 
@@ -493,7 +498,8 @@ def envoyer(texte):
         return False
 
 
-def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items, langue="fr"):
+def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items,
+                 langue="fr", strict=True):
     """Parse un flux et empile les entrees retenues dans items."""
     try:
         d = feedparser.parse(url)
@@ -509,7 +515,7 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items, l
             continue
 
         txt = f"{titre} {resume}"
-        media = source_de(e, titre)
+        media = source_de(e, titre) or etiquette
 
         if SRC_EXCLUES.search(media):
             continue
@@ -517,7 +523,7 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items, l
             continue
         if not motif.search(txt):
             continue
-        if motif_et and not motif_et.search(txt):
+        if strict and motif_et and not motif_et.search(txt):
             continue
         if BRUIT_RE.search(txt):
             continue
@@ -534,7 +540,8 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items, l
         bonus = 4 if SRC_QUALITE.search(media) else 0
         items.append({
             "cle": cle(titre), "titre": titre.strip(), "lien": lien,
-            "tag": sujet["tag"], "source": media or etiquette, "date": dt,
+            "resume": resume,
+            "tag": sujet["tag"], "source": media, "date": dt,
             "score": score(titre, resume, poids) + bonus,
             "seuil": sujet.get("seuil", SEUIL_SCORE),
             "langue": langue,
@@ -564,7 +571,7 @@ def collecter():
             nom, url = entree[0], entree[1]
             poids = entree[2] if len(entree) > 2 else 7
             n_sujet += traiter_flux(url, sujet, motif, motif_et, poids,
-                                    nom, limite, items, "en")
+                                    nom, limite, items, "en", strict=False)
             time.sleep(0.35)
 
         langue = sujet["locales"][0][0] if sujet["locales"] else "rss"
@@ -603,6 +610,14 @@ def main():
         meta = (f"{html.escape(it['source'])} · "
                 f"{it['date'].strftime('%d/%m %H:%M')} · score {it['score']}")
 
+        ligne_res = ""
+        brut = (it.get("resume") or "").strip()
+        if len(brut) > 60:
+            court = brut[:220].rsplit(" ", 1)[0]
+            if it.get("langue", "fr") != "fr":
+                court = traduire(court, it["langue"])
+            ligne_res = f"{html.escape(court)}\n"
+
         cible = resoudre_lien(it["lien"]) or it["lien"]
         liens = [f"<a href=\"{html.escape(cible, quote=True)}\">🔗 Source</a>"]
 
@@ -617,6 +632,7 @@ def main():
 
         msg = (f"{it['tag']} {alerte} <b>{html.escape(titre_aff)}</b>\n"
                f"{ligne_vo}"
+               f"{ligne_res}"
                f"<i>{meta}</i>\n"
                + "  ·  ".join(liens))
 
