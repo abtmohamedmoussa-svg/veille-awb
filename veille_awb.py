@@ -238,7 +238,7 @@ SIGNAUX_FORTS = {
     r"failure|abandoned|scrapped|outage|post-?mortem|lessons": 6,
     r"went live|in production|rolled out|case study": 5,
     r"tokeni[sz]|stablecoin|settlement|custody|distributed ledger|smart contract": 6,
-    r"appoints|names .{0,20}chief|chief \w+ officer|steps down": 4,
+    r"chief (?:ai|data|digital|technolog\w+|information) officer|\bcaio\b": 4,
     r"fund ?rais|valuation|\$\d+ ?(?:m|bn|billion|million)": 5,
 }
 SIGNAUX_RE = [(re.compile(p, re.IGNORECASE), w) for p, w in SIGNAUX_FORTS.items()]
@@ -303,10 +303,11 @@ def _trad_mymemory(texte, source):
 
 
 def traduire(texte, source="auto"):
-    """Traduit vers le francais : gtx, puis MyMemory, sinon texte original."""
+    """Traduit vers le francais : gtx, puis MyMemory, sinon texte original.
+    Cap a 450 caracteres : l'API MyMemory limite q a 500 octets."""
     if not TRADUIRE or not texte:
         return texte
-    texte = texte[:900]
+    texte = texte[:450]
     if texte in _CACHE_TRAD:
         return _CACHE_TRAD[texte]
 
@@ -613,7 +614,7 @@ def main():
         ligne_res = ""
         brut = (it.get("resume") or "").strip()
         if len(brut) > 60:
-            court = brut[:220].rsplit(" ", 1)[0]
+            court = brut[:400].rsplit(" ", 1)[0]
             if it.get("langue", "fr") != "fr":
                 court = traduire(court, it["langue"])
             ligne_res = f"{html.escape(court)}\n"
