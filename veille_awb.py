@@ -492,7 +492,28 @@ def titre_propre(titre, media):
 
 def cle(titre):
     return hashlib.sha1(norm_titre(titre).encode("utf-8")).hexdigest()[:16]
+ACTEURS_EV = {
+    "moody": r"moody|موديز", "fitch": r"fitch|فيتش",
+    "sp": r"\bs ?p\b|standard poor", "fmi": r"\bfmi\b|\bimf\b|صندوق النقد",
+    "bceao": r"bceao", "beac": r"\bbeac\b", "bam": r"bank al maghrib",
+    "bct": r"\bbct\b|banque centrale de tunisie",
+    "tcmb": r"banque centrale turque|turkish central bank",
+}
+PAYS_EV = {
+    "tn": r"tunisi|تونس", "ma": r"maroc|moroc|مغرب", "eg": r"egypt|égypt|مصر",
+    "dz": r"alger|algéri|جزائر", "ly": r"liby|ليبي", "mr": r"mauritani|موريتاني",
+    "ci": r"ivoir|côte d ivoire", "cm": r"cameroun|cameroon|كاميرون",
+    "sn": r"sénégal|senegal|سنغال", "ga": r"gabon|غابون", "tr": r"turqu|turkey|تركي",
+}
+FENETRE_EVT_H = int(os.environ.get("FENETRE_EVT_H", "72"))
 
+
+def cle_evenement(titre, resume=""):
+    """Regroupe les reprises d'un meme evenement : acteur x pays."""
+    txt = norm_titre(f"{titre} {resume}")
+    a = next((k for k, rx in ACTEURS_EV.items() if re.search(rx, txt)), None)
+    p = next((k for k, rx in PAYS_EV.items() if re.search(rx, txt)), None)
+    return f"ev:{a}:{p}" if a and p else None
 
 def score(titre, resume, poids_base):
     txt = f"{titre} {resume}"
@@ -572,9 +593,10 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items,
             dt = datetime.fromtimestamp(time.mktime(pub), tz=timezone.utc)
             if dt < limite or dt > datetime.now(timezone.utc) + timedelta(hours=6):
                 continue
+     
         else:
-            dt = datetime.now(timezone.utc)
-
+            continue    # sans date fiable, on ecarte : c'est la faille des vieux articles
+                   
         bonus = 4 if SRC_QUALITE.search(media) else 0
         items.append({
             "cle": cle(titre), "titre": titre.strip(), "lien": lien,
@@ -583,6 +605,7 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items,
             "score": score(titre, resume, poids) + bonus,
             "seuil": sujet.get("seuil", SEUIL_SCORE),
             "langue": langue,
+            "evenement": cle_evenement(titre, resume),
         })
         n += 1
     return n
@@ -633,16 +656,27 @@ def main():
     seen = charger_seen()
     items = collecter()
     print(f"{len(items)} items pertinents collectes")
-
-    uniques = {}
+   
+    maintenant_ts = int(time.time())
+    uniques, par_evenement = {}, {}
     for it in items:
         k = it["cle"]
         if k in seen:
             continue
+        ev = it.get("evenement")
+        if ev and maintenant_ts - seen.get(ev, 0) < FENETRE_EVT_H * 3600:
+            continue                      # evenement deja traite ces derniers jours
+        if ev:                            # une seule reprise par evenement dans ce run
+            prec = par_evenement.get(ev)
+            if prec and prec["score"] >= it["score"]:
+                continue
+            if prec:
+                uniques.pop(prec["cle"], None)
+            par_evenement[ev] = it
         if k not in uniques or it["score"] > uniques[k]["score"]:
             uniques[k] = it
 
-    retenus = [it for it in uniques.values() if it["score"] >= it["seuil"]]
+      retenus = [it for it in uniques.values() if it["score"] >= it["seuil"]]
     retenus.sort(key=lambda x: (x["tag"], -x["score"], x["date"]))
     print(f"{len(uniques)} uniques nouveaux -> {len(retenus)} au-dessus du seuil")
 
@@ -684,6 +718,8 @@ def main():
 
         if envoyer(msg):
             seen[it["cle"]] = int(time.time())
+        if it.get("evenement"):
+            seen[it["evenement"]] = int(time.time())
             envoyes += 1
         time.sleep(1.2)
 
