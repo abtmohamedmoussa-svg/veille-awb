@@ -8,9 +8,8 @@ Veille -> Telegram (canal unique, articles tagues par sujet)
   SOUV  : risque souverain / macro / monetaire   (Google News, FR-EN-AR)
   TECH  : use cases technologiques internationaux (GDELT + Finextra)
 
-Le sujet TECH n'utilise plus Google News : ses liens sont des identifiants
-chiffres, inexploitables pour la traduction. GDELT et les flux natifs
-renvoient les URL reelles des editeurs, donc le lien traduit fonctionne.
+Regroupement par evenement (acteur x pays) : evite les reprises multiples
+d'une meme decision (ex. plusieurs sites reprenant un avis Moody's).
 """
 
 import os, json, time, hashlib, html, re, sys, base64
@@ -381,6 +380,10 @@ _CACHE_URL = {}
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
 
+DOMAINES_SANS_TRADUCTION = re.compile(
+    r"finextra\.com|ft\.com|wsj\.com|bloomberg\.com|americanbanker\.com",
+    re.IGNORECASE)
+
 
 def _decoder_b64(url_gnews):
     m = re.search(r"/(?:rss/)?articles/([A-Za-z0-9_\-]+)", url_gnews)
@@ -449,16 +452,17 @@ def lien_traduit(url, src="auto"):
     reel = resoudre_lien(url)
     if not reel or "news.google.com" in reel:
         return None
-    m = re.match(r"^https?://([^/?#]+)([^#]*)$", reel)
+    if DOMAINES_SANS_TRADUCTION.search(reel):
+        return None
+    m = re.match(r"^https?://([^/?#]+)([^?#]*)", reel)
     if not m:
         return None
-    host, reste = m.group(1), m.group(2) or "/"
-    if not reste.startswith("/"):
-        reste = "/" + reste
+    host, chemin = m.group(1), m.group(2) or "/"
+    if not chemin.startswith("/"):
+        chemin = "/" + chemin
     host_tr = host.replace("-", "--").replace(".", "-")
-    sep = "&" if "?" in reste else "?"
-    return (f"https://{host_tr}.translate.goog{reste}{sep}"
-            f"_x_tr_sl={src}&_x_tr_tl=fr&_x_tr_hl=fr")
+    return (f"https://{host_tr}.translate.goog{chemin}"
+            f"?_x_tr_sl={src}&_x_tr_tl=fr&_x_tr_hl=fr")
 
 
 # ----------------------------------------------------------------------
@@ -490,8 +494,9 @@ def titre_propre(titre, media):
     return re.sub(r"\s+[-|–—]\s+[^-|–—]{2,40}$", "", titre).strip()
 
 
-def cle(titre):
-    return hashlib.sha1(norm_titre(titre).encode("utf-8")).hexdigest()[:16]
+# ----------------------------------------------------------------------
+# REGROUPEMENT PAR EVENEMENT (acteur x pays)
+# ----------------------------------------------------------------------
 ACTEURS_EV = {
     "moody": r"moody|موديز", "fitch": r"fitch|فيتش",
     "sp": r"\bs ?p\b|standard poor", "fmi": r"\bfmi\b|\bimf\b|صندوق النقد",
@@ -509,11 +514,17 @@ FENETRE_EVT_H = int(os.environ.get("FENETRE_EVT_H", "72"))
 
 
 def cle_evenement(titre, resume=""):
-    """Regroupe les reprises d'un meme evenement : acteur x pays."""
+    """Regroupe les reprises d'un meme evenement : acteur x pays.
+    Un seul message est envoye par evenement toutes les FENETRE_EVT_H heures."""
     txt = norm_titre(f"{titre} {resume}")
     a = next((k for k, rx in ACTEURS_EV.items() if re.search(rx, txt)), None)
     p = next((k for k, rx in PAYS_EV.items() if re.search(rx, txt)), None)
     return f"ev:{a}:{p}" if a and p else None
+
+
+def cle(titre):
+    return hashlib.sha1(norm_titre(titre).encode("utf-8")).hexdigest()[:16]
+
 
 def score(titre, resume, poids_base):
     txt = f"{titre} {resume}"
@@ -593,10 +604,9 @@ def traiter_flux(url, sujet, motif, motif_et, poids, etiquette, limite, items,
             dt = datetime.fromtimestamp(time.mktime(pub), tz=timezone.utc)
             if dt < limite or dt > datetime.now(timezone.utc) + timedelta(hours=6):
                 continue
-     
         else:
-            continue    # sans date fiable, on ecarte : c'est la faille des vieux articles
-                   
+            continue    # sans date fiable, on ecarte : evite les vieux articles
+
         bonus = 4 if SRC_QUALITE.search(media) else 0
         items.append({
             "cle": cle(titre), "titre": titre.strip(), "lien": lien,
@@ -628,20 +638,20 @@ def collecter():
                 n_sujet += traiter_flux(gnews_url(q, hl, gl, ceid), sujet,
                                         motif, motif_et, poids,
                                         f"GNews {gl}", limite, items, hl)
-                time.sleep(0.35)
+                time.sleep(0.15)
 
         for q, poids in sujet.get("gdelt", {}).items():
             n_sujet += traiter_flux(gdelt_url(q, "english", fen), sujet,
                                     motif, motif_et, poids,
                                     "GDELT", limite, items, "en", strict=False)
-            time.sleep(0.5)
+            time.sleep(0.3)
 
         for entree in sujet.get("flux", []):
             nom, url = entree[0], entree[1]
             poids = entree[2] if len(entree) > 2 else 7
             n_sujet += traiter_flux(url, sujet, motif, motif_et, poids,
                                     nom, limite, items, "en", strict=False)
-            time.sleep(0.35)
+            time.sleep(0.15)
 
         langue = sujet["locales"][0][0] if sujet["locales"] else "gdelt+rss"
         print(f"  {sujet['tag']} ({langue}) : {n_sujet} items retenus")
@@ -656,7 +666,7 @@ def main():
     seen = charger_seen()
     items = collecter()
     print(f"{len(items)} items pertinents collectes")
-   
+
     maintenant_ts = int(time.time())
     uniques, par_evenement = {}, {}
     for it in items:
@@ -676,7 +686,7 @@ def main():
         if k not in uniques or it["score"] > uniques[k]["score"]:
             uniques[k] = it
 
-      retenus = [it for it in uniques.values() if it["score"] >= it["seuil"]]
+    retenus = [it for it in uniques.values() if it["score"] >= it["seuil"]]
     retenus.sort(key=lambda x: (x["tag"], -x["score"], x["date"]))
     print(f"{len(uniques)} uniques nouveaux -> {len(retenus)} au-dessus du seuil")
 
@@ -718,8 +728,8 @@ def main():
 
         if envoyer(msg):
             seen[it["cle"]] = int(time.time())
-        if it.get("evenement"):
-            seen[it["evenement"]] = int(time.time())
+            if it.get("evenement"):
+                seen[it["evenement"]] = int(time.time())
             envoyes += 1
         time.sleep(1.2)
 
